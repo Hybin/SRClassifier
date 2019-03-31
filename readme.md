@@ -14,7 +14,7 @@ required, like `verbnet` inside the nltk and `en_core_web_sm` inside the spacy.
 So, open your terminal again:
 ```bash
 $ # for en_core_web_sm
-$ python3 -m spacy download en_core_web_sm
+$ python3 -m spacy download en_core_web_md
 $ # for verbnet
 $ python3
 >>> import nltk

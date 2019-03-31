@@ -1,0 +1,4 @@
+{
+    "train_set_path": "../data/train/1.{}.text.xml",
+    "train_label_path": "../data/train/1.{}.relations.txt"
+}
