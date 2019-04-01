@@ -1,16 +1,38 @@
 def get_entity(element):
-    return element.text, element.get('id')
+    entities = list()
+    for e in element.findall('entity'):
+        if e.text is not None:
+            entities.append((e.text, e.get("id")))
+        else:
+            sub_entities = get_entity(e)
+            content = ""
+            for (entity, flag) in sub_entities:
+                content += entity + " "
+            entities.append((content.strip(), e.get("id")))
+            entities += sub_entities
+
+    return entities
 
 
-def make_pair(entities):
-    pairs = list()
-    for i in range(len(entities)):
-        start = entities[i]
-        for end in [entity for entity in entities[i:] if entity != start]:
-            pairs.append((start, end))
+def find_pair(entity, entities):
+    for (word, flag) in entities:
+        if entity == flag:
+            return word, flag
 
-    return pairs
+    return -1
 
 
-def merge_pairs(pairs):
-    return " ".join([word for (word, flag) in pairs])
+def find_sent(pair, sentences):
+    for sentence in sentences:
+        if pair in sentence:
+            return sentence
+
+    return -1
+
+
+def check_entity(entities):
+    for (word, flag) in entities:
+        if word is None:
+            return entities.index((word, flag))
+
+    return False

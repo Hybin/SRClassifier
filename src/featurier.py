@@ -3,24 +3,41 @@ from xml.etree import ElementTree
 from tqdm import tqdm
 from nltk.corpus import verbnet
 from sklearn.preprocessing import LabelEncoder
+from functools import reduce
 import numpy as np
 import spacy
 import re
+import pandas as pd
+import warnings
+import copy
+
+warnings.filterwarnings("ignore")
 
 
 class Featurier(object):
-    def __init__(self, config, task):
+    def __init__(self, config, task, mode='train'):
         self.conf = config
         self.task = task
+        self.mode = mode
         self.nlp = spacy.load("en_core_web_md")
         self.text_ids = list()
         self.le = LabelEncoder()
         self.abstract = ""
+        self.relations = {"USAGE": 0, "TOPIC": 1, "MODEL-FEATURE": 2, "PART_WHOLE": 3, "RESULT": 4, "COMPARE": 5}
+        self.container = dict()
+        self.units = dict()
 
-    # 载入 XML 文件
-    @property
+    # 载入数据
     def load(self):
-        tree = ElementTree.parse(self.conf.train_set_path.format(self.task))
+        if self.mode == 'train':
+            data_path = self.conf.train_set_path
+            label_path = self.conf.train_label_path
+        else:
+            data_path = self.conf.test_set_path
+            label_path = self.conf.test_label_path
+
+        """载入 XML 数据"""
+        tree = ElementTree.parse(data_path.format(self.task))
         root = tree.getroot()
         texts = root.findall("text")
 
@@ -32,11 +49,13 @@ class Featurier(object):
             unit = list()
             # Process the title
             title = text.find("title")
-            unit.append(self._parse(title))
+            title_cont = self._parse(title, text.get("id"))
+            unit.append(title_cont)
 
             # Process the abstract
             abstract = text.find("abstract")
-            abs_cont = self._parse(abstract)
+            abs_cont = self._parse(abstract, text.get("id"))
+            self.units[text.get("id")] = title_cont + abs_cont
             sentences = [sentence.text for sentence in self.nlp(self.abstract).sents]
 
             for sentence in sentences:
@@ -53,45 +72,90 @@ class Featurier(object):
 
                 abs_cont = abs_cont[len(bag):]
                 unit.append(bag)
-            units.append(unit)
+            units.append({text.get("id"): unit})
 
         # Encode the text_ids
         self.le.fit(self.text_ids)
 
-        return units
+        """载入关系数据"""
+        with open(label_path.format(self.task), 'r') as fp:
+            data = fp.readlines()
+            labels = [(item[0:item.index("(")], item[item.index("(") + 1:-2]) for item in data]
+            relations = dict()
+            for (label, pair) in labels:
+                unit_id = pair.split(",")[0].split(".")[0]
+                if unit_id not in relations.keys():
+                    relations[unit_id] = list()
+
+                relations[unit_id].append((label, pair))
+
+        return units, relations
 
     # 解析 XML 文件
-    def _parse(self, element):
+    def _parse(self, element, unit_id):
         contents = list()
         abstract = ""
         if element is not None:
-            entities = list(map(get_entity, element.findall("entity")))
+            entities = get_entity(element)
+            if unit_id not in self.container.keys():
+                self.container[unit_id] = list()
+
+            self.container[unit_id] += entities
+
             for phrase in element.itertext():
                 abstract += phrase
                 entity = [entity for entity in entities if phrase in entity]
                 if len(entity) > 0:
                     contents.append(entity[0])
+                    entities.remove(entity[0])
                 else:
                     tokens = self.nlp(phrase.strip())
-                    contents += [(token.text, "text") for token in tokens]
+                    items = [(token.text, "text") for token in tokens]
+                    for (item, flag) in items:
+                        if re.search(re.escape(".") + "[A-Z][a-z]+", item) is not None:
+                            i = items.index((item, flag))
+                            items.remove(items[i])
+                            items.insert(i, (item[0], 'text'))
+                            items.insert(i + 1, (item[1:], flag))
+
+                    contents += items
+            contents += entities
+        # Check if the punctuation is correct
+        while re.search(re.escape(".") + "[A-Z][a-z]+", abstract) is not None:
+            pos = re.search(re.escape(".") + "[A-Z][a-z]+", abstract).span()[0] + 1
+            abstract = abstract[0:pos] + " " + abstract[pos:]
         self.abstract = abstract
         return contents
 
     # 构建词汇特征
-    @staticmethod
-    def _get_pairs(sentence):
-        """获取实体对"""
-        entities = list()
-        for (word, flag) in sentence:
-            if flag != 'text':
-                entities.append((word, flag))
+    def _get_pairs(self, labels, unit_id):
+        """获取关系类型（训练数据）及实体对"""
+        relations = list()
+        pairs = list()
+        entities = self.container[unit_id]
+        for (label, pair) in labels[unit_id]:
+            # Get the relation
+            if label != "":
+                relations.append(self.relations[label])
+            else:
+                relations.append(-1)
 
-        return make_pair(entities)
+            # Get the pair
+            indice = pair.split(",")
+            if 'REVERSE' in indice:
+                ent_pair = (find_pair(indice[1], entities), find_pair(indice[0], entities))
+            else:
+                ent_pair = (find_pair(indice[0], entities), find_pair(indice[1], entities))
+
+            pairs.append(ent_pair)
+
+        return relations, pairs
 
     @staticmethod
-    def _get_distance(sentence, pair):
+    def _get_distance(unit, pair):
         """获取实体之间的距离"""
-        return sentence.index(pair[1]) - sentence.index(pair[0])
+        distance = abs(unit.index(pair[1]) - unit.index(pair[0]))
+        return distance
 
     @staticmethod
     def _get_indicator(sentence, pair, indicator):
@@ -103,22 +167,9 @@ class Featurier(object):
 
         return 0
 
-    def _get_levin_class(self, sentence):
-        head = [sent.root.text for sent in self.nlp(merge_pairs(sentence)).sents]
-        classes = verbnet.classids(head[0])
-
-        if len(classes) == 0:
-            return -1
-        else:
-            return int(classes[0].split("-")[1].split('.')[0])
-
     # 构建实体特征
     def _get_text_pos(self, pair):
         return self.le.transform([pair[0][1].split(".")[0]])[0]
-
-    @staticmethod
-    def _get_sent_pos(text, sentence):
-        return text.index(sentence)
 
     @staticmethod
     def _get_start_ent(sentence, pair):
@@ -144,31 +195,35 @@ class Featurier(object):
 
     def construct(self):
         print('Spacy model loaded...', 'Begin to load the train data...')
-        units = self.load
+        units, labels = self.load()
         print('Train data loaded...', 'Begin to extract the features...')
 
         features = {}
+
         for unit in tqdm(units, desc="Featurier"):
-            for sentence in unit:
-                feature = {}
-                pairs = self._get_pairs(sentence)
+            feature = {}
+            unit_id = list(unit.keys())[0]
+            container = self.units[unit_id]
+            if unit_id in labels.keys():
+                relations, pairs = self._get_pairs(labels, unit_id)
 
                 for pair in pairs:
                     feature[pair[0][1] + "-" + pair[1][1]] = {}
-                    feature[pair[0][1] + "-" + pair[1][1]]["distance"] = self._get_distance(sentence, pair)
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasIn"] = self._get_indicator(sentence, pair, "in")
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasOf"] = self._get_indicator(sentence, pair, "of")
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasWith"] = self._get_indicator(sentence, pair, "with")
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasThan"] = self._get_indicator(sentence, pair, "than")
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasAnd"] = self._get_indicator(sentence, pair, "and")
-                    feature[pair[0][1] + "-" + pair[1][1]]["hasWith"] = self._get_indicator(sentence, pair, "with")
-                    feature[pair[0][1] + "-" + pair[1][1]]["levinClass"] = self._get_levin_class(sentence)
+                    feature[pair[0][1] + "-" + pair[1][1]]["distance"] = self._get_distance(container, pair)
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasIn"] = self._get_indicator(container, pair, "in")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasOf"] = self._get_indicator(container, pair, "of")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasWith"] = self._get_indicator(container, pair, "with")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasThan"] = self._get_indicator(container, pair, "than")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasAnd"] = self._get_indicator(container, pair, "and")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasWith"] = self._get_indicator(container, pair, "with")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasFrom"] = self._get_indicator(container, pair, "from")
                     feature[pair[0][1] + "-" + pair[1][1]]["textPos"] = self._get_text_pos(pair)
-                    feature[pair[0][1] + "-" + pair[1][1]]["sentPos"] = self._get_sent_pos(unit, sentence)
-                    feature[pair[0][1] + "-" + pair[1][1]]["startEntity"] = self._get_start_ent(sentence, pair)
-                    feature[pair[0][1] + "-" + pair[1][1]]["endEntity"] = self._get_end_ent(sentence, pair)
+                    feature[pair[0][1] + "-" + pair[1][1]]["startEntity"] = self._get_start_ent(container, pair)
+                    feature[pair[0][1] + "-" + pair[1][1]]["endEntity"] = self._get_end_ent(container, pair)
                     feature[pair[0][1] + "-" + pair[1][1]]["similarity"] = self._get_similarity(pair)
-                    feature[pair[0][1] + "-" + pair[1][1]]["simiBucket"] = self._get_simi_bucket(feature[pair[0][1] + "-" + pair[1][1]]["similarity"])
+                    feature[pair[0][1] + "-" + pair[1][1]]["simiBucket"] = self._get_simi_bucket(
+                        feature[pair[0][1] + "-" + pair[1][1]]["similarity"])
+                    feature[pair[0][1] + "-" + pair[1][1]]["relation"] = relations[pairs.index(pair)]
+            features.update(feature)
 
-                features.update(feature)
         return features

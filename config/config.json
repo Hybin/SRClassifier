@@ -1,4 +1,6 @@
 {
     "train_set_path": "../data/train/1.{}.text.xml",
-    "train_label_path": "../data/train/1.{}.relations.txt"
+    "train_label_path": "../data/train/1.{}.relations.txt",
+    "test_set_path": "../data/test/1.{}.test.text.xml",
+    "test_label_path": "../data/test/1.{}.test.relations.txt"
 }
