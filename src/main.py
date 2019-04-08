@@ -1,15 +1,22 @@
-from src.config import Config
-from src.featurier import Featurier
-import pandas as pd
+from config import Config
+from pipeline import Pipeline
+import argparse
 
 if __name__ == '__main__':
+
+    # Accept the optional arguments
+    parser = argparse.ArgumentParser(description='Semantic Relations Classification.')
+    parser.add_argument('--task', help='number of the sub task')
+    parser.add_argument('--type', help='train or test')
+    args = parser.parse_args()
+
+    # Load the config
     config = Config()
 
     print('Load the spacy model...')
-    featurier = Featurier(config, '2', 'test')
 
-    features = featurier.construct()
+    pipeline = Pipeline(config, args.task, args.type)
 
-    df = pd.DataFrame(data=list(features.values()))
+    pipeline.process()
 
-    print(df.to_string())
+    print("Complete!")

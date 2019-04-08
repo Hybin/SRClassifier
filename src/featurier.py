@@ -1,15 +1,11 @@
-from src.utils import *
+from utils import *
 from xml.etree import ElementTree
 from tqdm import tqdm
-from nltk.corpus import verbnet
 from sklearn.preprocessing import LabelEncoder
-from functools import reduce
-import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 import spacy
 import re
-import pandas as pd
 import warnings
-import copy
 
 warnings.filterwarnings("ignore")
 
@@ -23,9 +19,10 @@ class Featurier(object):
         self.text_ids = list()
         self.le = LabelEncoder()
         self.abstract = ""
-        self.relations = {"USAGE": 0, "TOPIC": 1, "MODEL-FEATURE": 2, "PART_WHOLE": 3, "RESULT": 4, "COMPARE": 5}
+        self.relations = {"USAGE": 5, "TOPIC": 4, "MODEL-FEATURE": 1, "PART_WHOLE": 2, "RESULT": 3, "COMPARE": 0}
         self.container = dict()
         self.units = dict()
+        self.segments = dict()
 
     # 载入数据
     def load(self):
@@ -167,6 +164,30 @@ class Featurier(object):
 
         return 0
 
+    def _get_verb(self, sentence, pair):
+        """判断实体之间是否存在动词"""
+        segment = sentence[sentence.index(pair[0]) + 1:sentence.index(pair[1])]
+        for (word, flag) in segment:
+            doc = self.nlp(word)
+            verbs = [token.lemma_ for token in doc if token.pos_ == "VERB"]
+            if len(verbs) > 0:
+                return 1
+
+        return 0
+
+    def _build_tf_idf(self, pairs, sentence):
+        for pair in pairs:
+            segment = sentence[sentence.index(pair[0]) + 1:sentence.index(pair[1])]
+            content = ""
+            for (word, flag) in segment:
+                content += word + " "
+            self.segments[pair[0][1] + "-" + pair[1][1]] = content.strip()
+
+        vectorizer = TfidfVectorizer()
+        vectorizer.fit(list(self.segments.values()))
+
+        return vectorizer
+
     # 构建实体特征
     def _get_text_pos(self, pair):
         return self.le.transform([pair[0][1].split(".")[0]])[0]
@@ -206,11 +227,16 @@ class Featurier(object):
             container = self.units[unit_id]
             if unit_id in labels.keys():
                 relations, pairs = self._get_pairs(labels, unit_id)
+                vectorizer = self._build_tf_idf(pairs, container)
 
                 for pair in pairs:
                     feature[pair[0][1] + "-" + pair[1][1]] = {}
                     feature[pair[0][1] + "-" + pair[1][1]]["distance"] = self._get_distance(container, pair)
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasVerb"] = self._get_verb(container, pair)
                     feature[pair[0][1] + "-" + pair[1][1]]["hasIn"] = self._get_indicator(container, pair, "in")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasTo"] = self._get_indicator(container, pair, "to")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasOn"] = self._get_indicator(container, pair, "on")
+                    feature[pair[0][1] + "-" + pair[1][1]]["hasIs"] = self._get_indicator(container, pair, "is")
                     feature[pair[0][1] + "-" + pair[1][1]]["hasOf"] = self._get_indicator(container, pair, "of")
                     feature[pair[0][1] + "-" + pair[1][1]]["hasWith"] = self._get_indicator(container, pair, "with")
                     feature[pair[0][1] + "-" + pair[1][1]]["hasThan"] = self._get_indicator(container, pair, "than")
@@ -223,7 +249,9 @@ class Featurier(object):
                     feature[pair[0][1] + "-" + pair[1][1]]["similarity"] = self._get_similarity(pair)
                     feature[pair[0][1] + "-" + pair[1][1]]["simiBucket"] = self._get_simi_bucket(
                         feature[pair[0][1] + "-" + pair[1][1]]["similarity"])
+                    feature[pair[0][1] + "-" + pair[1][1]]["context"] = vectorizer.transform([self.segments[pair[0][1] + "-" + pair[1][1]]]).tocsc().toarray()[0]
                     feature[pair[0][1] + "-" + pair[1][1]]["relation"] = relations[pairs.index(pair)]
+
             features.update(feature)
 
         return features

@@ -1,11 +1,19 @@
 def get_entity(element):
     entities = list()
     for e in element.findall('entity'):
+        content = ""
         if e.text is not None:
-            entities.append((e.text, e.get("id")))
+            if len(get_entity(e)) == 0:
+                entities.append((e.text, e.get("id")))
+            else:
+                content += e.text + " "
+                sub_entities = get_entity(e)
+                for (entity, flag) in sub_entities:
+                    content += entity + " "
+                entities.append((content.strip(), e.get("id")))
+                entities += sub_entities
         else:
             sub_entities = get_entity(e)
-            content = ""
             for (entity, flag) in sub_entities:
                 content += entity + " "
             entities.append((content.strip(), e.get("id")))
